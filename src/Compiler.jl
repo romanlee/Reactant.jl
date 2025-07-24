@@ -3395,8 +3395,17 @@ end
 const __thunk_fwd_body_cache = Dict{Symbol,Expr}()
 const __thunk_rev_body_cache = Dict{Expr,Symbol}()
 
+"""
+    compile
+
+Compile the input function, f, via XLA and generate Julia Thunk code, a Julia wrapper
+to: convert input args to XLA format and call the XLA compiled function
+"""
 function compile(f, args; sync=false, kwargs...)
+    # compile the function f
     _, exec, mlir_fn_res, device, client, str = compile_xla(f, args; kwargs...)
+
+    # extract stuff from the mlir function result, such as linearlized args
     (;
         linear_args,
         seen_args,
@@ -3406,6 +3415,7 @@ function compile(f, args; sync=false, kwargs...)
         donated_args_mask,
     ) = mlir_fn_res
 
+    # handle sharding
     result_stores = Dict{Tuple,Symbol}()
     path_to_shard_info = mlir_fn_res.is_sharded ? Dict{Tuple,Symbol}() : nothing
 
@@ -3431,6 +3441,10 @@ function compile(f, args; sync=false, kwargs...)
     ndevices = mlir_fn_res.is_sharded ? length(mlir_fn_res.global_device_ids) : 1
 
     # generate Julia `Thunk` code
+    
+    # generate code that will, upon calling the compiled function from julia,
+    # convert the high-level arguments (e.g., complex Julia types like Arrays, structs, etc.) 
+    # into flattened, device-ready (ie, xla-ized) format
     flatten_arg_names, flatten_code, resharded_inputs = codegen_flatten!(
         linear_args,
         seen_args,
@@ -3440,10 +3454,14 @@ function compile(f, args; sync=false, kwargs...)
         ndevices,
     )
 
+    # generate code that will, upon calling the compiled function from julia, 
+    # take the flattened inputs and call the XLA compled function
     concretized_res_names, xla_call_code = codegen_xla_call(
         flatten_arg_names, length(linear_results), mlir_fn_res.is_sharded, ndevices
     )
 
+    # generate code that will, upon calling the compiled function from julia, 
+    # handle sharding
     shard_info_code, optional_shard_info_code, linear_result_shard_info = codegen_shard_info(
         mlir_fn_res.is_sharded,
         length(linear_results),
@@ -3453,6 +3471,8 @@ function compile(f, args; sync=false, kwargs...)
         ndevices,
     )
 
+    # generate code that will, upon calling the compiled function from julia, 
+    # converts XLA results (eg, raw xla buffers) back to Julia's high-level format, which the caller (in julia-land) can then use
     unflatten_code, used_shardinfo = codegen_unflatten!(
         linear_args,
         preserved_args,
@@ -3466,6 +3486,7 @@ function compile(f, args; sync=false, kwargs...)
         resharded_inputs,
     )
 
+    # some options/optimizations
     for (i, name) in enumerate(linear_result_shard_info)
         if name in used_shardinfo
             push!(shard_info_code, optional_shard_info_code[i])
@@ -3488,6 +3509,7 @@ function compile(f, args; sync=false, kwargs...)
         :(Base.IdSet{XLA.IFRT.Array}())
     end
 
+    # combine all the generated code into a single callable entity (ie, the Julia `Thunk` code)
     body = quote
         global_mesh = $(global_mesh_expr)
         donated_buffers = $(donated_buffers_set)
