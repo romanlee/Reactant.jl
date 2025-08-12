@@ -1368,6 +1368,12 @@ function get_optimize_comms_passes(options::Reactant.OptimizeCommunicationOption
     return res
 end
 
+"""
+    compile_mlir!
+
+Compile the input Julia function f to MLIR module by first performing tracing, then 
+running optimization passes.
+"""
 function compile_mlir!(
     mod,
     f,
@@ -1413,6 +1419,7 @@ function compile_mlir!(
     is_raising = raise isa String || raise
     activate_raising!(is_raising)
 
+    # perform tracing, produce MLIR computational graph
     fnname = string(f)
     mlir_fn_res = try
         Reactant.TracedUtils.make_mlir_fn(
@@ -1448,6 +1455,7 @@ function compile_mlir!(
 
     concrete_seen = OrderedIdDict()
 
+    # convert traced types to concrete types
     concrete_result = make_tracer(
         concrete_seen, traced_result, ("result",), TracedToConcrete; runtime
     )
@@ -3398,7 +3406,7 @@ const __thunk_rev_body_cache = Dict{Expr,Symbol}()
 """
     compile
 
-Compile the input function, f, via XLA and generate Julia Thunk code, a Julia wrapper
+Compile the input function, f, to XLA and generate Julia Thunk code, a Julia wrapper
 to: convert input args to XLA format and call the XLA compiled function
 """
 function compile(f, args; sync=false, kwargs...)
