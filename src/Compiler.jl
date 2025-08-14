@@ -1455,10 +1455,21 @@ function compile_mlir!(
 
     concrete_seen = OrderedIdDict()
 
-    # convert traced types to concrete types
+    # obtain concrete results from traced results. 
+    # This has the form of a julia data structure identical to the result data structure, 
+    # where each field in the data structure is the type of that output
+    # There is no information in concrete_result about the values of those guys, or 
+    # the way that arguments map into them
+
+    println("\ntraced result:")
+    # println(traced_result) 
+    println(typeof(traced_result))
+
     concrete_result = make_tracer(
         concrete_seen, traced_result, ("result",), TracedToConcrete; runtime
     )
+    # println("\nconcrete result:")
+    # println(concrete_result) 
 
     optimize isa Bool && (optimize = ifelse(optimize, :all, :none))
 
@@ -2854,7 +2865,7 @@ end
 """
     codegen_unflatten!
 
-Generate Julia code to wrap the XLA buffers back into the output result datatypes.
+Generate Julia code which reconstructs high-level Julia data structures from flat XLA data structures.
 The name is due to its similarity to the `unflatten` function in `jax.tree_util.register_pytree_node`.
 """
 function codegen_unflatten!(
@@ -2901,19 +2912,31 @@ function codegen_unflatten!(
     resprefix::Symbol = :result
     resargprefix::Symbol = :resargs
 
+    # loop over results (including both regular results and argument-results)
+    # populate result_stores (for regular results) and unflatten_code (for arg-results)
+    # result_stores provides a mapping from a path to a concretized_res_name
+    # unflatten_code is code which 
     for (concrete_res_name, result, shard_info) in
         zip(concretized_res_names, linear_results, linear_result_shard_info)
+        # each linear (ie flattened) result has multiple (?*) paths, which tells you where in the 
+        # highlevel nested return types it belongs
+        # *I guess it could show up multiple times in the returnned values?
         paths = (
             (
                 p for p in Reactant.TracedUtils.get_paths(result) if
                 length(p) > 0 && (p[1] == resprefix || p[1] == resargprefix)
             )...,
         )
+        # loop over each of this result's paths
+        # sets results stores
         for path in paths
+            # handle normal results
             if path[1] == resprefix
-                unflatcode = :result
+                unflatcode = :result # dead code?
                 path = path[2:end]
 
+                # we look through all the other paths for this result (in has_idx) and check
+                # if any have p[1]=argprefix, if so, we check if that arg got resharded and do something if so
                 if Reactant.TracedUtils.has_idx(result, argprefix)
                     argidx = Reactant.TracedUtils.get_idx(result, argprefix)
                     if haskey(resharded_inputs, argidx)
@@ -2921,26 +2944,46 @@ function codegen_unflatten!(
                     end
                 end
 
+                # map path to concrete result name
+                # well really, concrete_res_name had no meaning before this. It was just some arbitatrily named sybmol. Here we're giving it meaning by assigning it to a path, and then we're providing a mapping from that path to the result name
                 result_stores[path] = concrete_res_name
+
+                # create mapping from the path to the sharding info, if we're doing sharding
                 if path_to_shard_info !== nothing
                     path_to_shard_info[path] = shard_info
                 end
                 continue
+
+            # handle argument-results (mutated arguments)
+            # updates unflatten_code ?  
             else
+                # well, it should be
                 @assert path[1] == resargprefix
+
+                # generate an expression that will access args["the value of path[2]"]
+                # args not defined in the current scope, but presumably it will be defined
+                # when this Expr gets executed
                 unflatcode = :(args[$(path[2])])
 
+                # figure out if this arg was resharded
                 need_to_unreshard = get(resharded_inputs, (:args, path[2:end]...), nothing)
                 if need_to_unreshard !== nothing
                     @assert runtime isa Val{:IFRT} "PJRT is not supported here. Use IFRT \
                                                     instead."
                 end
 
+                # unpack the rest of the path and generate code to access those locations
+                # via traced_getfield. 
+                # will generate something like unflatcode = :(traced_getfield(traced_getfield(args[1], :field1), :subfield))
+                # or unflatcode = :(traced_getfield(traced_getfield(args[1], 1), 2))  # data[1][2]
                 path = path[3:end]
                 for p in path[1:(end - 1)]
                     unflatcode = :(traced_getfield($unflatcode, $(Meta.quot(p))))
                 end
 
+                # concrete_res_name gets transformed to concrete_res_name_final.
+                # if there is no unresharding, then there is no change.
+                # if there is resharding, then the name changes according to the unresharded_arrays_cache.
                 concrete_res_name_final = concrete_res_name
                 if need_to_unreshard !== nothing
                     if !haskey(unresharded_arrays_cache, concrete_res_name)
@@ -2961,6 +3004,8 @@ function codegen_unflatten!(
                     concrete_res_name_final = unresharded_arrays_cache[concrete_res_name]
                 end
 
+                # recall that path = path[3:end]
+                # generates code to set the result fields
                 if length(path) > 0
                     needs_cache_dict = true
                     # XXX: we might need to handle sharding here
@@ -2980,9 +3025,9 @@ function codegen_unflatten!(
                     ))
                 end
                 push!(unflatten_code, unflatcode)
-            end
+            end # if/else path[1]==resprefix
         end
-    end
+    end # for (concrete_res_name, result, shard_info) in
 
     if needs_cache_dict
         pushfirst!(
@@ -3013,6 +3058,7 @@ function codegen_unflatten!(
             res = :result
             path = path[2:end]
 
+            # i think: if this path is already one of the keys in result_stores then skip
             if in(path, keys(result_stores))
                 continue
             end
@@ -3045,16 +3091,23 @@ function codegen_unflatten!(
     result_code = create_result(
         concrete_result,
         (),
-        result_stores,
+        result_stores, # mapping from paths to results (which just arbitatrily named Symbols)
         path_to_shard_info,
         to_unreshard_results,
         unresharded_code,
         unresharded_arrays_cache,
         used_shardinfo,
-        result_cache,
-        var_idx,
-        resultgen_code,
+        result_cache, # currently an empty IDDict{Any, Symbol}
+        var_idx,      # used to make sure results have unique symbol
+        resultgen_code, # Array of type Expr, currently just contains stuff for preserved args if any
     )
+
+    # for i in resultgen_code
+    #     println("HMMMM ", i)
+    # end
+    #
+    # println("resultgen_code: ")
+    # display( resultgen_code... )
 
     # if some argument is mutated, change them to point to the correct concrete results
     for (result, arg_idx) in preserved_args
@@ -3103,6 +3156,13 @@ function codegen_unflatten!(
     if DEBUG_ALIASED_BUFFER_ASSIGNMENT_ERROR[]
         push!(unflatten_code, :(empty!(DEBUG_BUFFER_POINTERS_STORE_DICT)))
     end
+
+    # println("PRINT resultgen_code: ")
+    # display( Expr[ resultgen_code... ])
+    # println("PRINT :(result = result_code)")
+    # display( Expr[:(result = $result_code)] )
+    # println("PRINT unflatten_code")
+    # display( Expr[ unflatten_code... ] )
 
     # generate return object which stores the concrete results in some arbitrary way
     return Expr[
@@ -3413,15 +3473,23 @@ function compile(f, args; sync=false, kwargs...)
     # compile the function f
     _, exec, mlir_fn_res, device, client, str = compile_xla(f, args; kwargs...)
 
-    # extract stuff from the mlir function result, such as linearlized args
     (;
-        linear_args,
+       linear_args, # function arguments in linear (ie, nesting removed) form
         seen_args,
-        linear_results,
+        linear_results, # traced function results, linearized
         preserved_args,
-        concrete_result,
+        concrete_result, # literally exactly what you'd expect it to be, just the julia types of the return values, no bullshit
         donated_args_mask,
     ) = mlir_fn_res
+
+    # println("LINEAR RESULTS")
+    # println("    typeof: ", typeof(linear_results))
+    # println("    val: ", (linear_results))
+    #
+    # println("CONCRETE_RESULT")
+    # println("    typeof: ", typeof(concrete_result))
+    # println("    val: ", concrete_result)
+
 
     # handle sharding
     result_stores = Dict{Tuple,Symbol}()
