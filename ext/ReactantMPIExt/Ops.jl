@@ -319,9 +319,14 @@ function send(
         "llvm.func @MPI_Send(!llvm.ptr, i32, !llvm.ptr, i32, i32, !llvm.ptr) -> i32",
     )
 
+    IR.inject!("printf", "llvm.func @printf(!llvm.ptr, ...) -> i32")
+    IR.inject!("formatstr",
+        "llvm.mlir.global constant @formatstr(\"%d\\n\\00\") : !llvm.array<4 x i8>",
+    )
+
     #! format: off
         # int MPI_Send(const void* buf, int count, MPI_Datatype datatype, 
-        # int dest, int tag, MPI_Comm comm)
+        #              int dest, int tag, MPI_Comm comm)
     IR.inject!(sym_name, """
         func.func @$sym_name(%errcode : !llvm.ptr, %buf : !llvm.ptr, %count_ptr : !llvm.ptr, %dest_ptr : !llvm.ptr, %tag_ptr : !llvm.ptr) -> () {
             %comm = llvm.mlir.addressof @MPI_COMM_WORLD : !llvm.ptr
@@ -329,12 +334,52 @@ function send(
             %count = llvm.load %count_ptr : !llvm.ptr -> i32
             %dest = llvm.load %dest_ptr : !llvm.ptr -> i32
             %tag = llvm.load %tag_ptr : !llvm.ptr -> i32
+
+            // Get a pointer to the format string
+            %fsptr = llvm.mlir.addressof @formatstr : !llvm.ptr
+
+            // print the vars
+            %ret_p0 = llvm.call @printf(%fsptr, %count) vararg(!llvm.func<i32 (!llvm.ptr, ...)>) : (!llvm.ptr, i32) -> i32
+            %ret_p1 = llvm.call @printf(%fsptr, %datatype) vararg(!llvm.func<i32 (!llvm.ptr, ...)>) : (!llvm.ptr, !llvm.ptr) -> i32
+            %ret_p2 = llvm.call @printf(%fsptr, %dest) vararg(!llvm.func<i32 (!llvm.ptr, ...)>) : (!llvm.ptr, i32) -> i32
+            %ret_p3 = llvm.call @printf(%fsptr, %tag) vararg(!llvm.func<i32 (!llvm.ptr, ...)>) : (!llvm.ptr, i32) -> i32
+            %ret_p4 = llvm.call @printf(%fsptr, %comm) vararg(!llvm.func<i32 (!llvm.ptr, ...)>) : (!llvm.ptr, !llvm.ptr) -> i32
+
+            // "corrupt" the memory so the prints don't get optimzed away
+            %r0 = llvm.getelementptr inbounds %buf[0] : (!llvm.ptr) -> !llvm.ptr, i32
+            llvm.store %ret_p0, %r0 : i32, !llvm.ptr
+            %r1 = llvm.getelementptr inbounds %buf[1] : (!llvm.ptr) -> !llvm.ptr, i32
+            llvm.store %ret_p1, %r1 : i32, !llvm.ptr
+            %r2 = llvm.getelementptr inbounds %buf[2] : (!llvm.ptr) -> !llvm.ptr, i32
+            llvm.store %ret_p2, %r2 : i32, !llvm.ptr
+            %r3 = llvm.getelementptr inbounds %buf[3] : (!llvm.ptr) -> !llvm.ptr, i32
+            llvm.store %ret_p3, %r3 : i32, !llvm.ptr
+            %r4 = llvm.getelementptr inbounds %buf[4] : (!llvm.ptr) -> !llvm.ptr, i32
+            llvm.store %ret_p4, %r4 : i32, !llvm.ptr
+
             %res = llvm.call @MPI_Send(%buf, %count, %datatype, %dest, %tag, %comm) : (!llvm.ptr, i32, !llvm.ptr, i32, i32, !llvm.ptr) -> (i32)
             llvm.store %res, %errcode : i32, !llvm.ptr
             func.return
         }
     """)
     #! format: on
+
+    # #! format: off
+    #     # int MPI_Send(const void* buf, int count, MPI_Datatype datatype, 
+    #     # int dest, int tag, MPI_Comm comm)
+    # IR.inject!(sym_name, """
+    #     func.func @$sym_name(%errcode : !llvm.ptr, %buf : !llvm.ptr, %count_ptr : !llvm.ptr, %dest_ptr : !llvm.ptr, %tag_ptr : !llvm.ptr) -> () {
+    #         %comm = llvm.mlir.addressof @MPI_COMM_WORLD : !llvm.ptr
+    #         %datatype = llvm.mlir.addressof @$(mpi_datatype_name) : !llvm.ptr
+    #         %count = llvm.load %count_ptr : !llvm.ptr -> i32
+    #         %dest = llvm.load %dest_ptr : !llvm.ptr -> i32
+    #         %tag = llvm.load %tag_ptr : !llvm.ptr -> i32
+    #         %res = llvm.call @MPI_Send(%buf, %count, %datatype, %dest, %tag, %comm) : (!llvm.ptr, i32, !llvm.ptr, i32, i32, !llvm.ptr) -> (i32)
+    #         llvm.store %res, %errcode : i32, !llvm.ptr
+    #         func.return
+    #     }
+    # """)
+    # #! format: on
 
     count = Reactant.Ops.constant(Int32(length(buf)))
     errcode = Reactant.Ops.constant(fill(Cint(0)))
@@ -444,6 +489,11 @@ function recv!(
         "llvm.func @MPI_Recv(!llvm.ptr, i32, !llvm.ptr, i32, i32, !llvm.ptr, !llvm.ptr) -> i32",
     )
 
+    IR.inject!("printf", "llvm.func @printf(!llvm.ptr, ...) -> i32")
+    IR.inject!("formatstr",
+        "llvm.mlir.global constant @formatstr(\"%d\\n\\00\") : !llvm.array<4 x i8>",
+    )
+
     #! format: off
     IR.inject!(sym_name, """
         func.func @$sym_name(%errcode : !llvm.ptr, %buf : !llvm.ptr, %count_ptr : !llvm.ptr, %source_ptr : !llvm.ptr, %tag_ptr : !llvm.ptr) -> () {
@@ -453,12 +503,60 @@ function recv!(
             %count = llvm.load %count_ptr : !llvm.ptr -> i32
             %source = llvm.load %source_ptr : !llvm.ptr -> i32
             %tag = llvm.load %tag_ptr : !llvm.ptr -> i32
+
+            // Get a pointer to the format string
+            %fsptr = llvm.mlir.addressof @formatstr : !llvm.ptr
+
+            // print the vars
+            %ret_p0 = llvm.call @printf(%fsptr, %count) vararg(!llvm.func<i32 (!llvm.ptr, ...)>) : (!llvm.ptr, i32) -> i32
+            %ret_p1 = llvm.call @printf(%fsptr, %datatype) vararg(!llvm.func<i32 (!llvm.ptr, ...)>) : (!llvm.ptr, !llvm.ptr) -> i32
+            %ret_p2 = llvm.call @printf(%fsptr, %source) vararg(!llvm.func<i32 (!llvm.ptr, ...)>) : (!llvm.ptr, i32) -> i32
+            %ret_p3 = llvm.call @printf(%fsptr, %tag) vararg(!llvm.func<i32 (!llvm.ptr, ...)>) : (!llvm.ptr, i32) -> i32
+            %ret_p4 = llvm.call @printf(%fsptr, %comm) vararg(!llvm.func<i32 (!llvm.ptr, ...)>) : (!llvm.ptr, !llvm.ptr) -> i32
+            %ret_p5 = llvm.call @printf(%fsptr, %status) vararg(!llvm.func<i32 (!llvm.ptr, ...)>) : (!llvm.ptr, !llvm.ptr) -> i32
+
+            // "corrupt" the memory so the prints don't get optimzed away
+            %r0 = llvm.getelementptr inbounds %buf[0] : (!llvm.ptr) -> !llvm.ptr, i32
+            llvm.store %ret_p0, %r0 : i32, !llvm.ptr
+            %r1 = llvm.getelementptr inbounds %buf[1] : (!llvm.ptr) -> !llvm.ptr, i32
+            llvm.store %ret_p1, %r1 : i32, !llvm.ptr
+            %r2 = llvm.getelementptr inbounds %buf[2] : (!llvm.ptr) -> !llvm.ptr, i32
+            llvm.store %ret_p2, %r2 : i32, !llvm.ptr
+            %r3 = llvm.getelementptr inbounds %buf[3] : (!llvm.ptr) -> !llvm.ptr, i32
+            llvm.store %ret_p3, %r3 : i32, !llvm.ptr
+            %r4 = llvm.getelementptr inbounds %buf[4] : (!llvm.ptr) -> !llvm.ptr, i32
+            llvm.store %ret_p4, %r4 : i32, !llvm.ptr
+            %r5 = llvm.getelementptr inbounds %buf[5] : (!llvm.ptr) -> !llvm.ptr, i32
+            llvm.store %ret_p5, %r5 : i32, !llvm.ptr
+
             %res = llvm.call @MPI_Recv(%buf, %count, %datatype, %source, %tag, %comm, %status) : (!llvm.ptr, i32, !llvm.ptr, i32, i32, !llvm.ptr, !llvm.ptr) -> (i32)
             llvm.store %res, %errcode : i32, !llvm.ptr
             func.return
         }
     """)
     #! format: on
+            # %ret_p6 = llvm.call @printf(%fsptr, %mpi_recv_ptr) vararg(!llvm.func<i32 (!llvm.ptr, ...)>) : (!llvm.ptr, !llvm.ptr) -> i32
+
+            # %r6 = llvm.getelementptr inbounds %buf[6] : (!llvm.ptr) -> !llvm.ptr, i32
+            # llvm.store %ret_p6, %r6 : i32, !llvm.ptr
+
+    # #! format: off
+        # int MPI_Recv(void* buf, int count, MPI_Datatype datatype,
+        #              int source, int tag, MPI_Comm comm, MPI_Status* status)
+    # IR.inject!(sym_name, """
+    #     func.func @$sym_name(%errcode : !llvm.ptr, %buf : !llvm.ptr, %count_ptr : !llvm.ptr, %source_ptr : !llvm.ptr, %tag_ptr : !llvm.ptr) -> () {
+    #         %comm = llvm.mlir.addressof @MPI_COMM_WORLD : !llvm.ptr
+    #         %datatype = llvm.mlir.addressof @$mpi_datatype_name : !llvm.ptr
+    #         %status = llvm.mlir.addressof @MPI_STATUS_IGNORE : !llvm.ptr
+    #         %count = llvm.load %count_ptr : !llvm.ptr -> i32
+    #         %source = llvm.load %source_ptr : !llvm.ptr -> i32
+    #         %tag = llvm.load %tag_ptr : !llvm.ptr -> i32
+    #         %res = llvm.call @MPI_Recv(%buf, %count, %datatype, %source, %tag, %comm, %status) : (!llvm.ptr, i32, !llvm.ptr, i32, i32, !llvm.ptr, !llvm.ptr) -> (i32)
+    #         llvm.store %res, %errcode : i32, !llvm.ptr
+    #         func.return
+    #     }
+    # """)
+    # #! format: on
 
     count = Reactant.Ops.constant(Int32(length(recvbuf)))
     errcode = Reactant.Ops.constant(fill(Cint(0)))
