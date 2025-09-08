@@ -321,7 +321,7 @@ function send(
 
     IR.inject!("printf", "llvm.func @printf(!llvm.ptr, ...) -> i32")
     IR.inject!("formatstr",
-        "llvm.mlir.global constant @formatstr(\"%d\\n\\00\") : !llvm.array<4 x i8>",
+        "llvm.mlir.global constant @formatstr(\"send: %d\\n\\00\") : !llvm.array<10 x i8>",
     )
 
     #! format: off
@@ -364,23 +364,6 @@ function send(
     """)
     #! format: on
 
-    # #! format: off
-    #     # int MPI_Send(const void* buf, int count, MPI_Datatype datatype, 
-    #     # int dest, int tag, MPI_Comm comm)
-    # IR.inject!(sym_name, """
-    #     func.func @$sym_name(%errcode : !llvm.ptr, %buf : !llvm.ptr, %count_ptr : !llvm.ptr, %dest_ptr : !llvm.ptr, %tag_ptr : !llvm.ptr) -> () {
-    #         %comm = llvm.mlir.addressof @MPI_COMM_WORLD : !llvm.ptr
-    #         %datatype = llvm.mlir.addressof @$(mpi_datatype_name) : !llvm.ptr
-    #         %count = llvm.load %count_ptr : !llvm.ptr -> i32
-    #         %dest = llvm.load %dest_ptr : !llvm.ptr -> i32
-    #         %tag = llvm.load %tag_ptr : !llvm.ptr -> i32
-    #         %res = llvm.call @MPI_Send(%buf, %count, %datatype, %dest, %tag, %comm) : (!llvm.ptr, i32, !llvm.ptr, i32, i32, !llvm.ptr) -> (i32)
-    #         llvm.store %res, %errcode : i32, !llvm.ptr
-    #         func.return
-    #     }
-    # """)
-    # #! format: on
-
     count = Reactant.Ops.constant(Int32(length(buf)))
     errcode = Reactant.Ops.constant(fill(Cint(0)))
 
@@ -404,6 +387,68 @@ function send(
     errcode.mlir_data = IR.result(ret)
     return errcode
 end
+
+# function send(
+#     buf::TracedRArray,
+#     tag::TracedRNumber,
+#     dest::TracedRNumber;
+#     location=mlir_stacktrace("mpi.send", @__FILE__, @__LINE__),
+# )
+#     T = Reactant.unwrapped_eltype(buf)
+#     mpi_datatype = convert_julia_type_to_mpi_datatype(T)
+#     mpi_datatype_name = inject_mpi_datatype!(mpi_datatype)
+
+#     sym_name = "enzymexla_wrapper_MPI_Send_$(mpi_datatype_name)"
+#     sym_attr = IR.FlatSymbolRefAttribute(sym_name)
+
+#     # TODO emit constant for size and datatype, and pass as args
+
+#     IR.inject!("MPI_COMM_WORLD", "llvm.mlir.global constant @MPI_COMM_WORLD() : !llvm.ptr")
+#     IR.inject!(
+#         "MPI_Send",
+#         "llvm.func @MPI_Send(!llvm.ptr, i32, !llvm.ptr, i32, i32, !llvm.ptr) -> i32",
+#     )
+
+#     #! format: off
+#         # int MPI_Send(const void* buf, int count, MPI_Datatype datatype, 
+#         # int dest, int tag, MPI_Comm comm)
+#     IR.inject!(sym_name, """
+#         func.func @$sym_name(%errcode : !llvm.ptr, %buf : !llvm.ptr, %count_ptr : !llvm.ptr, %dest_ptr : !llvm.ptr, %tag_ptr : !llvm.ptr) -> () {
+#             %comm = llvm.mlir.addressof @MPI_COMM_WORLD : !llvm.ptr
+#             %datatype = llvm.mlir.addressof @$(mpi_datatype_name) : !llvm.ptr
+#             %count = llvm.load %count_ptr : !llvm.ptr -> i32
+#             %dest = llvm.load %dest_ptr : !llvm.ptr -> i32
+#             %tag = llvm.load %tag_ptr : !llvm.ptr -> i32
+#             %res = llvm.call @MPI_Send(%buf, %count, %datatype, %dest, %tag, %comm) : (!llvm.ptr, i32, !llvm.ptr, i32, i32, !llvm.ptr) -> (i32)
+#             llvm.store %res, %errcode : i32, !llvm.ptr
+#             func.return
+#         }
+#     """)
+#     #! format: on
+
+#     count = Reactant.Ops.constant(Int32(length(buf)))
+#     errcode = Reactant.Ops.constant(fill(Cint(0)))
+
+#     output_operand_aliases = IR.Attribute([
+#         IR.Attribute(
+#             MLIR.API.stablehloOutputOperandAliasGet(
+#                 MLIR.IR.context(), 0, C_NULL, 0, 0, C_NULL
+#             ),
+#         ),
+#     ])
+
+#     ret = enzymexla.jit_call(
+#         IR.Value[
+#             errcode.mlir_data, buf.mlir_data, count.mlir_data, dest.mlir_data, tag.mlir_data
+#         ];
+#         fn=sym_attr,
+#         result_0=IR.Type[mlir_type(errcode)],
+#         output_operand_aliases=output_operand_aliases,
+#         location,
+#     )
+#     errcode.mlir_data = IR.result(ret)
+#     return errcode
+# end
 
 # TODO need c-function for creating MLIR `mpi.request` type?
 function isend(
@@ -491,10 +536,12 @@ function recv!(
 
     IR.inject!("printf", "llvm.func @printf(!llvm.ptr, ...) -> i32")
     IR.inject!("formatstr",
-        "llvm.mlir.global constant @formatstr(\"%d\\n\\00\") : !llvm.array<4 x i8>",
+        "llvm.mlir.global constant @formatstr(\"recv: %d\\n\\00\") : !llvm.array<10 x i8>",
     )
 
     #! format: off
+    #     int MPI_Recv(void* buf, int count, MPI_Datatype datatype,
+    #                  int source, int tag, MPI_Comm comm, MPI_Status* status)
     IR.inject!(sym_name, """
         func.func @$sym_name(%errcode : !llvm.ptr, %buf : !llvm.ptr, %count_ptr : !llvm.ptr, %source_ptr : !llvm.ptr, %tag_ptr : !llvm.ptr) -> () {
             %comm = llvm.mlir.addressof @MPI_COMM_WORLD : !llvm.ptr
@@ -535,28 +582,6 @@ function recv!(
         }
     """)
     #! format: on
-            # %ret_p6 = llvm.call @printf(%fsptr, %mpi_recv_ptr) vararg(!llvm.func<i32 (!llvm.ptr, ...)>) : (!llvm.ptr, !llvm.ptr) -> i32
-
-            # %r6 = llvm.getelementptr inbounds %buf[6] : (!llvm.ptr) -> !llvm.ptr, i32
-            # llvm.store %ret_p6, %r6 : i32, !llvm.ptr
-
-    # #! format: off
-        # int MPI_Recv(void* buf, int count, MPI_Datatype datatype,
-        #              int source, int tag, MPI_Comm comm, MPI_Status* status)
-    # IR.inject!(sym_name, """
-    #     func.func @$sym_name(%errcode : !llvm.ptr, %buf : !llvm.ptr, %count_ptr : !llvm.ptr, %source_ptr : !llvm.ptr, %tag_ptr : !llvm.ptr) -> () {
-    #         %comm = llvm.mlir.addressof @MPI_COMM_WORLD : !llvm.ptr
-    #         %datatype = llvm.mlir.addressof @$mpi_datatype_name : !llvm.ptr
-    #         %status = llvm.mlir.addressof @MPI_STATUS_IGNORE : !llvm.ptr
-    #         %count = llvm.load %count_ptr : !llvm.ptr -> i32
-    #         %source = llvm.load %source_ptr : !llvm.ptr -> i32
-    #         %tag = llvm.load %tag_ptr : !llvm.ptr -> i32
-    #         %res = llvm.call @MPI_Recv(%buf, %count, %datatype, %source, %tag, %comm, %status) : (!llvm.ptr, i32, !llvm.ptr, i32, i32, !llvm.ptr, !llvm.ptr) -> (i32)
-    #         llvm.store %res, %errcode : i32, !llvm.ptr
-    #         func.return
-    #     }
-    # """)
-    # #! format: on
 
     count = Reactant.Ops.constant(Int32(length(recvbuf)))
     errcode = Reactant.Ops.constant(fill(Cint(0)))
@@ -593,6 +618,82 @@ function recv!(
 
     return errcode, recvbuf
 end
+
+# function recv!(
+#     recvbuf::TracedRArray,
+#     tag::TracedRNumber,
+#     src::TracedRNumber;
+#     location=mlir_stacktrace("mpi.recv", @__FILE__, @__LINE__),
+# )
+#     T = Reactant.unwrapped_eltype(recvbuf)
+#     mpi_datatype = convert_julia_type_to_mpi_datatype(T)
+#     mpi_datatype_name = inject_mpi_datatype!(mpi_datatype)
+
+#     sym_name = "enzymexla_wrapper_MPI_Recv_$(mpi_datatype_name)"
+#     sym_attr = IR.FlatSymbolRefAttribute(sym_name)
+
+#     IR.inject!("MPI_COMM_WORLD", "llvm.mlir.global constant @MPI_COMM_WORLD() : !llvm.ptr")
+#     IR.inject!(
+#         "MPI_STATUS_IGNORE", "llvm.mlir.global constant @MPI_STATUS_IGNORE() : !llvm.ptr"
+#     )
+#     IR.inject!(
+#         "MPI_Recv",
+#         "llvm.func @MPI_Recv(!llvm.ptr, i32, !llvm.ptr, i32, i32, !llvm.ptr, !llvm.ptr) -> i32",
+#     )
+
+#     #! format: off
+#     #     int MPI_Recv(void* buf, int count, MPI_Datatype datatype,
+#     #                  int source, int tag, MPI_Comm comm, MPI_Status* status)
+#     IR.inject!(sym_name, """
+#         func.func @$sym_name(%errcode : !llvm.ptr, %buf : !llvm.ptr, %count_ptr : !llvm.ptr, %source_ptr : !llvm.ptr, %tag_ptr : !llvm.ptr) -> () {
+#             %comm = llvm.mlir.addressof @MPI_COMM_WORLD : !llvm.ptr
+#             %datatype = llvm.mlir.addressof @$mpi_datatype_name : !llvm.ptr
+#             %status = llvm.mlir.addressof @MPI_STATUS_IGNORE : !llvm.ptr
+#             %count = llvm.load %count_ptr : !llvm.ptr -> i32
+#             %source = llvm.load %source_ptr : !llvm.ptr -> i32
+#             %tag = llvm.load %tag_ptr : !llvm.ptr -> i32
+#             %res = llvm.call @MPI_Recv(%buf, %count, %datatype, %source, %tag, %comm, %status) : (!llvm.ptr, i32, !llvm.ptr, i32, i32, !llvm.ptr, !llvm.ptr) -> (i32)
+#             llvm.store %res, %errcode : i32, !llvm.ptr
+#             func.return
+#         }
+#     """)
+#     #! format: on
+
+#     count = Reactant.Ops.constant(Int32(length(recvbuf)))
+#     errcode = Reactant.Ops.constant(fill(Cint(0)))
+
+#     output_operand_aliases = IR.Attribute([
+#         IR.Attribute(
+#             MLIR.API.stablehloOutputOperandAliasGet(
+#                 MLIR.IR.context(), 1, Ref{Int64}(0), 0, 0, C_NULL
+#             ),
+#         ),
+#         IR.Attribute(
+#             MLIR.API.stablehloOutputOperandAliasGet(
+#                 MLIR.IR.context(), 1, Ref{Int64}(1), 1, 0, C_NULL
+#             ),
+#         ),
+#     ])
+
+#     ret = enzymexla.jit_call(
+#         IR.Value[
+#             errcode.mlir_data,
+#             recvbuf.mlir_data,
+#             count.mlir_data,
+#             src.mlir_data,
+#             tag.mlir_data,
+#         ];
+#         fn=sym_attr,
+#         result_0=[mlir_type(errcode), mlir_type(recvbuf)],
+#         output_operand_aliases,
+#         location,
+#     )
+
+#     errcode.mlir_data = IR.result(ret, 1)
+#     recvbuf.mlir_data = IR.result(ret, 2)
+
+#     return errcode, recvbuf
+# end
 
 # # TODO need c-function for creating MLIR `mpi.request` type?
 # function irecv!(
